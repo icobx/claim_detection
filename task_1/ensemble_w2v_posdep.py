@@ -1,36 +1,36 @@
-## Features: Word Embeddings + Feature Fusion
-## ## Models: SVM
+# Features: Word Embeddings + Feature Fusion
+# Models: SVM
 
-import sys, os
+import time
+import pickle
+import re
+import json
+import argparse
+from thundersvm import *
+import gensim.downloader as api
+import gensim
+import spacy
+import numpy as np
+import pandas as pd
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+from nltk.corpus import stopwords
+from scorer.main import evaluate
+from sklearn import decomposition, ensemble
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn import model_selection, preprocessing, linear_model, naive_bayes, metrics, svm
+import sys
+import os
 sys.path.append('.')
 
-from sklearn import model_selection, preprocessing, linear_model, naive_bayes, metrics, svm
-from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
-from sklearn import decomposition, ensemble
-
-from scorer.main import evaluate
-from nltk.corpus import stopwords
-from nltk.sentiment.vader import SentimentIntensityAnalyzer
-
-import json, re, pickle, time
-import pandas as pd
-import numpy as np
-
-import spacy
-import gensim
-import gensim.downloader as api
-from thundersvm import *
-
-import argparse
 
 my_loc = os.path.dirname(__file__)
+data_path = os.path.join(my_loc, 'data')
 
 parser = argparse.ArgumentParser(description='Training for Word Embs + NEs')
 parser.add_argument('--gpu_id', type=int, default=0,
                     help='0,1,2,3')
 
 args = parser.parse_args()
-
 
 
 def get_spacy_doc_vectors(input_feats, nlp):
@@ -53,8 +53,8 @@ def get_gensim_doc_vectors(input_feats, model, size):
         words = tweet.split()
         temp = []
         for word in words:
-            if word in model.wv.vocab:
-                temp.append(model.wv.get_vector(word))
+            if word in model.key_to_index:
+                temp.append(model.get_vector(word))
 
         if not temp:
             temp = np.zeros(size)
@@ -133,7 +133,6 @@ def get_dep_feats(tweet_list, w2v_type):
             if rel in dep_map:
                 temp[dep_map[rel]] += 1
 
-
         if sum(temp) > 0:
             temp = temp/sum(temp)
 
@@ -142,17 +141,18 @@ def get_dep_feats(tweet_list, w2v_type):
     return np.array(feats)
 
 
-
-train_data = json.load(open(my_loc+'/proc_data/train_data.json', 'r', encoding='utf-8'))
-val_data = json.load(open(my_loc+'/proc_data/val_data.json', 'r', encoding='utf-8'))
+train_data = json.load(
+    open(data_path+'/proc_data/train_data.json', 'r', encoding='utf-8'))
+val_data = json.load(
+    open(data_path+'/proc_data/val_data.json', 'r', encoding='utf-8'))
 
 nlp = spacy.load('en_core_web_lg')
 
 pos_type = 'pos_twit_nostop'
 w2v_type = 'twit_clean'
 
-pos_tags = {'NOUN':0, 'VERB':1, 'PROPN':2, 'ADJ':3, 'ADV':4, 'NUM':5,
-            'ADP':6, 'PRON':7}
+pos_tags = {'NOUN': 0, 'VERB': 1, 'PROPN': 2, 'ADJ': 3, 'ADV': 4, 'NUM': 5,
+            'ADP': 6, 'PRON': 7}
 
 train_x, train_y, trainDF = get_tweet_data(train_data, w2v_type)
 val_x, val_y, valDF = get_tweet_data(val_data, w2v_type)
@@ -161,7 +161,7 @@ train_pos = get_pos_feat(train_data, pos_type)
 val_pos = get_pos_feat(val_data, pos_type)
 
 dep_rels = get_dep_relations(w2v_type)
-dep_map = {val:key for key,val in enumerate(list(dep_rels))}
+dep_map = {val: key for key, val in enumerate(list(dep_rels))}
 
 train_dep = get_dep_feats(train_data, w2v_type)
 val_dep = get_dep_feats(val_data, w2v_type)
@@ -185,7 +185,8 @@ for wordmod in wordvec_list:
     ft_train = np.hstack((ft_train, train_ft_all))
     ft_val = np.hstack((ft_val, val_ft_all))
 
-    model_params = pickle.load(open(my_loc+'/models/%s_posdep_2_4.pkl'%(wordmod),'rb'))
+    model_params = pickle.load(
+        open(my_loc+'/models/%s_posdep_2_4.pkl' % (wordmod), 'rb'))
 
     best_pca = model_params['best_pca']
 
@@ -194,12 +195,17 @@ for wordmod in wordvec_list:
         ft_val = pca.transform(ft_val)
 
     svm_model = SVC()
-    svm_model.load_from_file(my_loc+'/models/%s_posdep_2_4.dt'%(wordmod))
+    # svm_model.load_from_file(my_loc+'/models/%s_posdep_2_4.dt'%(wordmod))
+    with open(
+        my_loc+'/models/%s_posdep_2_4.dt' % (wordmod),
+        'rb'
+    ) as modelf:
+        svm_model = pickle.load(modelf)
 
-    print("Model %s ACC: %.3f"%(wordmod, svm_model.score(ft_val, val_y)))
+    print("Model %s ACC: %.3f" % (wordmod, svm_model.score(ft_val, val_y)))
 
     pred_all.append(svm_model.predict(ft_val))
-    desc_all.append(np.squeeze(svm_model.decision_function(ft_val),1))
+    desc_all.append(svm_model.decision_function(ft_val))
 
 
 pred_all = np.array(pred_all).astype(np.int)
@@ -208,18 +214,17 @@ desc_all = np.array(desc_all)
 final_pred = np.ceil(np.mean(pred_all, axis=0)).astype(np.int)
 final_desc = np.mean(desc_all, axis=0)
 
-print("Ensemble ACC: %.3f"%(sum(val_y==final_pred)/len(val_y)))
+print("Ensemble ACC: %.3f" % (sum(val_y == final_pred)/len(val_y)))
 
 
-results_fpath = my_loc+'/results/task1_ensemble_posdep_svm_dev_%d_%d.tsv'%(2, 4)
+results_fpath = my_loc + \
+    '/results/task1_ensemble_posdep_svm_dev_%d_%d.tsv' % (2, 4)
 with open(results_fpath, "w") as results_file:
     for i, line in valDF.iterrows():
         dist = final_desc[i]
         results_file.write("{}\t{}\t{}\t{}\n".format('covid-19', line['tweet_id'],
-                                                        dist, "w2v_posdep"))
+                                                     dist, "w2v_posdep"))
 
-_, _, avg_precision, _, _ = evaluate('data/dev.tsv',results_fpath)
+_, _, avg_precision, _, _ = evaluate('data/dev.tsv', results_fpath)
 
-print("Ensemble Precision: %.3f"%(avg_precision))
-
-
+print("Ensemble Precision: %.3f" % (avg_precision))
