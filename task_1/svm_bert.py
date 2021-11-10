@@ -21,7 +21,6 @@ from scorer.main import evaluate
 from sklearn.preprocessing import StandardScaler
 from sklearn import decomposition, ensemble, tree
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
-from sklearn import model_selection, preprocessing, linear_model, naive_bayes, metrics, svm
 import sys
 import os
 from definitions import PROC_DATA_PATH, BERT_EMB_PATH, RESULTS_PATH, \
@@ -55,6 +54,9 @@ def get_best_svm_model(
     valDF,
     dataset_name
 ):
+    # ft_train, train_y,
+    #             ft_val, fname,
+    #             emb_type, val_y, valDF,
     # param_grid = [{'kernel':'linear', 'C': np.logspace(-2, 2, 10), 'gamma': [1]},
     #               {'kernel':'rbf', 'C': np.logspace(-2, 2, 10),
     #               'gamma': np.logspace(-2, 2, 10)}]
@@ -98,33 +100,26 @@ def get_best_svm_model(
                         random_state=42,
                         class_weight='balanced',
                     )
-                    print('post new model')
+                    # print('\npost new model\n')
                     # fit the training dataset on the classifier
-                    pf = time.time()
+                    # pf = time.time()
                     model.fit(feature_vector_train, label)
-                    print('post fit time (s): ', (time.time() - pf)/60.0)
+                    # print('\npost fit time (s): ',
+                    #   (time.time() - pf)/60.0, '\n')
 
                     # predict the acc on validation dataset
                     acc = model.score(feature_vector_valid, val_y)
-                    print('post score')
+                    # print('\npost score\n')
 
                     predicted_distance = model.decision_function(
                         feature_vector_valid
                     )
-                    print('post decision fun')
+                    # print('\npredicted_dist: ', predicted_distance, '\n')
+                    # print('\npost decision fun\n')
                     results_fpath = my_loc + \
                         '/results/bert_word_%s_%s_svm_norm%d.tsv' % (
                             fname, emb_type, args.normalize)
-                    # TODO: TEMPORARY SOLUTION
-                    temp = valDF
-                    temp['src'] = 'src'
-                    temp['content'] = 'content'
-                    temp = temp[['id', 'src', 'content', 'label']]
-                    temp.to_csv(
-                        f"{INPUT_DATA_PATHS[dataset_name]['folderpath']}/temp_val_combined.tsv",
-                        sep='\t'
-                    )
-                    # i, id, src, content, label
+
                     with open(results_fpath, "w") as results_file:
                         for i, line in valDF.iterrows():
                             dist = predicted_distance[i]
@@ -136,16 +131,16 @@ def get_best_svm_model(
                                     "bert_wd"
                                 )
                             )
-                    print('post write')
+                    # print('\npost write\n')
                     if dataset_name == 'covid_tweets':
                         _, _, avg_precision, _, _ = evaluate(
                             f'{data_path}/dev.tsv', results_fpath)
                     else:
                         _, _, avg_precision, _, _ = evaluate(
-                            f"{INPUT_DATA_PATHS[dataset_name]['folderpath']}/temp_val_combined.tsv",
+                            f"{INPUT_DATA_PATHS[dataset_name]['folderpath']}/val_combined.tsv",
                             results_fpath
                         )
-                    print('post eval')
+                    # print('\npost eval\n')
                     if round(avg_precision, 4) >= round(best_prec, 4) and round(acc, 2) >= round(best_acc, 2):
                         best_prec = avg_precision
                         best_acc = acc
@@ -168,14 +163,32 @@ def get_tweet_data(tweet_list):
     return np.array(twit_y).astype(np.int32), tweetDF
 
 
-def svm_bert(dataset: str = 'covid_tweets'):
+def get_pos_feat(tweet_list, pos_type, index=None):
+    pos_tags = {'NOUN': 0, 'VERB': 1, 'PROPN': 2, 'ADJ': 3, 'ADV': 4, 'NUM': 5}
 
-    # train_dict = json.load(
-    #     open(f'{PROC_DATA_PATH}/{dataset}_train_data.json', 'r')
-    # )
-    # val_dict = json.load(
-    #     open(f'{PROC_DATA_PATH}/{dataset}_val_data.json', 'r')
-    # )
+    pos_feat = []
+    for id in tweet_list:
+        # TODO: test this
+        if index and id not in index:
+            continue
+
+        temp = np.zeros(len(pos_tags))
+        proc_twit = tweet_list[id][pos_type]
+        for wd in proc_twit:
+            pos = wd.split('_')[1]
+            if pos in pos_tags:
+                temp[pos_tags[pos]] += 1
+
+        if sum(temp) > 0:
+            temp = temp/sum(temp)
+
+        pos_feat.append(temp)
+
+    return np.array(pos_feat)
+
+
+def svm_bert(dataset: str = 'covid_tweets', pos: Union[str, bool] = False):
+    
 
     # train_y, trainDF = get_tweet_data(train_dict)
     # val_y, valDF = get_tweet_data(val_dict)
@@ -194,40 +207,85 @@ def svm_bert(dataset: str = 'covid_tweets'):
         'labels'
     ]
     txt_type, bert_type = 'raw', 'bert-large-uncased'
-    embeddings = load_bert_embeddings(
-        dataset,
-        text_type=txt_type,
-        bert_type=bert_type,
-        emb_cat=emb_list
-    )
-    labels = embeddings['labels'].dropna()
-    trainDF = labels[labels['split_type'] == 'train'][['p0', 'id']].rename(
-        columns={'p0': 'label'}
-    ).astype(
-        {'label': int}
-    )
-    mask = None
-    if dataset == 'political_debates':  # political_debates
-        from sklearn.model_selection import train_test_split
+    # x = load_bert_embeddings(
+    #     dataset,
+    #     text_type=txt_type,
+    #     bert_type=bert_type,
+    #     emb_cat=emb_list
+    # )
 
-        _, val_ids = train_test_split(
-            trainDF['id'].values,
-            test_size=0.2,
-            random_state=2
-        )
-        mask = trainDF['id'].isin(val_ids)
-        valDF = trainDF[mask].reset_index(drop=True)
-        trainDF = trainDF[~mask].reset_index(drop=True)
+    embeddings = {
+        k: prepare(v, dataset='political_debates', subset=0.025)
+        for k, v in load_bert_embeddings(
+            dataset,
+            text_type=txt_type,
+            bert_type=bert_type,
+            emb_cat=emb_list
+        ).items()
+    }
 
-    else:
-        valDF = labels[labels['split_type'] == 'val'][['p0', 'id']].rename(
-            columns={'p0': 'label'}
-        ).astype(
-            {'label': int}
+    if pos:
+        # pos_type = 'pos_twit_nostop'
+        train_dict = json.load(
+            open(f'{PROC_DATA_PATH}/{dataset}_train_data.json', 'r')
         )
+        if dataset == 'covid_tweets':
+            val_dict = json.load(
+                open(f'{PROC_DATA_PATH}/{dataset}_val_data.json', 'r')
+            )
+            val_pos = get_pos_feat(val_dict, pos)
+            train_pos = get_pos_feat(train_dict, pos)
+
+        else:
+            tindex = set(embeddings['labels']['train']['id'].values)
+            vindex = set(embeddings['labels']['train']['id'].values)
+            
+            val_pos = get_pos_feat(train_dict, pos, index)
+            train_pos = get_pos_feat(train_dict, pos, index)
+    # labels = embeddings['labels']
+    # for i in emb_list[:-1]:
+    #     typ = embeddings[i]
+
+    #     print(f'train comparison labels vs {i}: ')
+    #     print(labels['train']['id'].compare(typ['train']['id']))
+    #     print(labels['train'])
+    #     print(typ['train'])
+    #     print(f'val comparison labels vs {i}: ')
+    #     print(labels['val']['id'].compare(typ['val']['id']))
+    #     print(labels['val'])
+    #     print(typ['val'])
+
+    # print(embeddings[])
+
+    # labels = embeddings['labels'].dropna()
+    # trainDF = labels[labels['split_type'] == 'train'][['p0', 'id']].rename(
+    #     columns={'p0': 'label'}
+    # ).astype(
+    #     {'label': int}
+    # )
+    # mask = None
+    # if dataset == 'political_debates':  # political_debates
+    #     from sklearn.model_selection import train_test_split
+
+    #     _, val_ids = train_test_split(
+    #         trainDF['id'].values,
+    #         test_size=0.2,
+    #         random_state=2
+    #     )
+    #     mask = trainDF['id'].isin(val_ids)
+    #     valDF = trainDF[mask].reset_index(drop=True)
+    #     trainDF = trainDF[~mask].reset_index(drop=True)
+
+    # else:
+    #     valDF = labels[labels['split_type'] == 'val'][['p0', 'id']].rename(
+    #         columns={'p0': 'label'}
+    #     ).astype(
+    #         {'label': int}
+    #     )
 
     # exit()
-    train_y, val_y = trainDF['label'].values, valDF['label'].values
+    train_y = embeddings['labels']['train']['p0'].values
+    val_y = embeddings['labels']['val']['p0'].values
 
     # emb_list = ['sent_word_catavg', 'sent_word_catavg_wostop', 'sent_word_sumavg',
     #             'sent_word_sumavg_wostop', 'sent_emb_2_last', 'sent_emb_2_last_wostop',
@@ -236,17 +294,25 @@ def svm_bert(dataset: str = 'covid_tweets'):
     for emb_type in emb_list:
         since = time.time()
 
-        emb_type_df = embeddings[emb_type]
-        train_emb_type_df = emb_type_df[emb_type_df['split_type'] == 'train']
+        if emb_type == 'labels':
+            continue
 
-        if dataset == 'political_debates':
-            val_emb_type_df = train_emb_type_df[mask].reset_index(drop=True)
-            train_emb_type_df = train_emb_type_df[~mask].reset_index(drop=True)
-        else:
-            val_emb_type_df = emb_type_df[emb_type_df['split_type'] == 'val']
+        split_emb = embeddings[emb_type]
+        # emb_type_df = embeddings[emb_type]
+        # train_emb_type_df = emb_type_df[emb_type_df['split_type'] == 'train']
 
-        ft_train = train_emb_type_df.iloc[:, 2:]
-        ft_val = val_emb_type_df.iloc[:, 2:]
+        # if dataset == 'political_debates':
+        #     val_emb_type_df = train_emb_type_df[mask].reset_index(drop=True)
+        #     train_emb_type_df = train_emb_type_df[~mask].reset_index(drop=True)
+        # else:
+        #     val_emb_type_df = emb_type_df[emb_type_df['split_type'] == 'val']
+
+        ft_train = split_emb['train'].iloc[:, 2:]
+        ft_val = split_emb['val'].iloc[:, 2:]
+
+        valDF = pd.DataFrame(val_y, columns=['label'])
+        valDF['id'] = split_emb['val']['id']
+        valDF = valDF.astype(int)
 
         if args.normalize:
             tr_norm = np.linalg.norm(ft_train, axis=1)
@@ -257,6 +323,10 @@ def svm_bert(dataset: str = 'covid_tweets'):
 
             ft_train = ft_train/tr_norm[:, np.newaxis]
             ft_val = ft_val/val_norm[:, np.newaxis]
+
+        if pos:
+            ft_train = np.concatenate((ft_train, train_pos), axis=1)
+            ft_val = np.concatenate((ft_val, val_pos), axis=1)
 
         # train_y =
         accuracy, best_pca_nk, classifier = get_best_svm_model(
@@ -289,8 +359,16 @@ def svm_bert(dataset: str = 'covid_tweets'):
                     'bert_wd'
                 ))
 
-        _, _, avg_precision, _, _ = evaluate(
-            f'{data_path}/dev.tsv', results_fpath)
+        if dataset == 'covid_tweets':
+            _, _, avg_precision, _, _ = evaluate(
+                f'{data_path}/dev.tsv', results_fpath)
+        else:
+            _, _, avg_precision, _, _ = evaluate(
+                f"{INPUT_DATA_PATHS[dataset]['folderpath']}/val_combined.tsv",
+                results_fpath
+            )
+        # _, _, avg_precision, _, _ = evaluate(
+        #     f'{data_path}/dev.tsv', results_fpath)
         print(f"{dataset}, {fname}, {emb_type} SVM AVGP: {round(avg_precision, 4)}\n")
         # print('best_pca', best_pca_nk)
         with open(
@@ -320,4 +398,53 @@ def svm_bert(dataset: str = 'covid_tweets'):
         f.write('\n\n')
 
 
+def prepare(df, dataset='covid_tweets', subset=1.0, rs=22):
+
+    train = df[df['split_type'] == 'train']
+    test = df[df['split_type'] == 'test']
+
+    if dataset == 'covid_tweets':
+        val = df[df['split_type'] == 'val']
+    else:
+        from sklearn.model_selection import train_test_split
+        tmask, vmask = train_test_split(
+            train['id'].values, test_size=0.25, random_state=rs)
+
+        val = train[train['id'].isin(vmask)].reset_index(drop=True)
+        val['split_type'] = 'val'
+
+        train = train[train['id'].isin(tmask)].reset_index(drop=True)
+
+    path = f"{INPUT_DATA_PATHS[dataset]['folderpath']}/val_combined.tsv"
+    if dataset == 'political_debates' \
+            and df.columns.size < 4 \
+            and not os.path.exists(path):
+
+        val_for_eval = val.rename(
+            columns={'p0': 'label'}
+        ).astype(
+            {'label': int}
+        )
+        # val_for_eval
+        val_for_eval['src'] = '?'
+        val_for_eval['content'] = '?'
+        val_for_eval = val_for_eval[['id', 'src', 'content', 'label']]
+        val_for_eval.to_csv(
+            path,
+            sep='\t'
+        )
+
+    if subset < 1.0:
+        train = train.sample(frac=subset, random_state=rs).reset_index(
+            drop=True
+        )
+        val = val.sample(frac=subset, random_state=rs).reset_index(drop=True)
+        test = test.sample(frac=subset*0.8, random_state=rs).reset_index(
+            drop=True
+        )
+
+    return {'train': train, 'val': val, 'test': test}
+
+
+# def subset(df):
 svm_bert(dataset='political_debates')  # dataset='political_debates'

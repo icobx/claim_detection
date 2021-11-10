@@ -116,6 +116,8 @@ def get_tweet_data(tweet_list):
 
 
 def get_pos_feat(tweet_list, pos_type):
+    pos_tags = {'NOUN': 0, 'VERB': 1, 'PROPN': 2, 'ADJ': 3, 'ADV': 4, 'NUM': 5}
+
     pos_feat = []
     for id in tweet_list:
         temp = np.zeros(len(pos_tags))
@@ -145,9 +147,8 @@ val_y, valDF = get_tweet_data(val_dict)
 
 
 # Syntactic Features
-pos_tags = {'NOUN': 0, 'VERB': 1, 'PROPN': 2, 'ADJ': 3, 'ADV': 4, 'NUM': 5}
 
-pos_type = 'pos_twit_nostop'
+
 w2v_type = 'twit_clean_nostop'
 
 train_pos = get_pos_feat(train_dict, pos_type)

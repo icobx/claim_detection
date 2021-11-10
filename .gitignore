@@ -2,3 +2,5 @@ task_1/data/
 task_1/models/
 task_1/results/
 task_1/file_results/
+task_1/__pycache__/
+task_1/*/__pycache__/
