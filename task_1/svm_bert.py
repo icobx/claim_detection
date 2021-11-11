@@ -14,6 +14,7 @@ import spacy
 import numpy as np
 import pandas as pd
 
+from typing import Union
 from tqdm import tqdm
 from nltk.corpus import stopwords
 from bert_embeddings import load_bert_embeddings
@@ -163,17 +164,18 @@ def get_tweet_data(tweet_list):
     return np.array(twit_y).astype(np.int32), tweetDF
 
 
-def get_pos_feat(tweet_list, pos_type, index=None):
+def get_pos_feat(data_dict, pos_type, index=None):
     pos_tags = {'NOUN': 0, 'VERB': 1, 'PROPN': 2, 'ADJ': 3, 'ADV': 4, 'NUM': 5}
 
     pos_feat = []
-    for id in tweet_list:
+    for id in data_dict:
         # TODO: test this
+
         if index and id not in index:
             continue
 
         temp = np.zeros(len(pos_tags))
-        proc_twit = tweet_list[id][pos_type]
+        proc_twit = data_dict[id][pos_type]
         for wd in proc_twit:
             pos = wd.split('_')[1]
             if pos in pos_tags:
@@ -187,8 +189,58 @@ def get_pos_feat(tweet_list, pos_type, index=None):
     return np.array(pos_feat)
 
 
-def svm_bert(dataset: str = 'covid_tweets', pos: Union[str, bool] = False):
-    
+def get_dep_map(nlp, train_data, dep, index=None):
+    pos_tags = {'ADJ', 'ADV', 'NOUN', 'PROPN', 'VERB', 'NUM'}
+    deps = set()
+    for id in train_data:
+        if index and id not in index:
+            continue
+
+        words = train_data[id][dep]
+        sent = " ".join(words)
+
+        doc = nlp(sent)
+
+        for token in doc:
+            if token.pos_ in pos_tags and token.head.pos_ in pos_tags:
+                # rel = token.pos_+'-'+token.dep_+'-'+token.head.pos_
+                rel = token.pos_+'-'+token.dep_
+                deps.add(rel)
+
+    return {val: i for i, val in enumerate(list(deps))}
+
+
+def get_dep_feats(nlp, dep_map, data_dict, dep, index=None):
+    feats = []
+    for id in data_dict:
+        if index and id not in index:
+            continue
+
+        temp = np.zeros(len(dep_map))
+        words = data_dict[id][dep]
+        sent = " ".join(words)
+
+        doc = nlp(sent)
+
+        for token in doc:
+            # rel = token.pos_+'-'+token.dep_+'-'+token.head.pos_
+            rel = token.pos_+'-'+token.dep_
+            if rel in dep_map:
+                temp[dep_map[rel]] += 1
+
+        if sum(temp) > 0:
+            temp = temp/sum(temp)
+
+        feats.append(temp)
+
+    return np.array(feats)
+
+
+def svm_bert(
+    dataset: str = 'covid_tweets',
+    pos: Union[str, bool] = False,
+    dep: Union[str, bool] = False,
+):
 
     # train_y, trainDF = get_tweet_data(train_dict)
     # val_y, valDF = get_tweet_data(val_dict)
@@ -207,12 +259,6 @@ def svm_bert(dataset: str = 'covid_tweets', pos: Union[str, bool] = False):
         'labels'
     ]
     txt_type, bert_type = 'raw', 'bert-large-uncased'
-    # x = load_bert_embeddings(
-    #     dataset,
-    #     text_type=txt_type,
-    #     bert_type=bert_type,
-    #     emb_cat=emb_list
-    # )
 
     embeddings = {
         k: prepare(v, dataset='political_debates', subset=0.025)
@@ -224,8 +270,8 @@ def svm_bert(dataset: str = 'covid_tweets', pos: Union[str, bool] = False):
         ).items()
     }
 
+    train_dict, tindex, vindex = [None]*3
     if pos:
-        # pos_type = 'pos_twit_nostop'
         train_dict = json.load(
             open(f'{PROC_DATA_PATH}/{dataset}_train_data.json', 'r')
         )
@@ -237,51 +283,42 @@ def svm_bert(dataset: str = 'covid_tweets', pos: Union[str, bool] = False):
             train_pos = get_pos_feat(train_dict, pos)
 
         else:
-            tindex = set(embeddings['labels']['train']['id'].values)
-            vindex = set(embeddings['labels']['train']['id'].values)
-            
-            val_pos = get_pos_feat(train_dict, pos, index)
-            train_pos = get_pos_feat(train_dict, pos, index)
-    # labels = embeddings['labels']
-    # for i in emb_list[:-1]:
-    #     typ = embeddings[i]
+            tindex = set(
+                embeddings['labels']['train']['id'].values.astype(str)
+            )
+            vindex = set(
+                embeddings['labels']['val']['id'].values.astype(str)
+            )
 
-    #     print(f'train comparison labels vs {i}: ')
-    #     print(labels['train']['id'].compare(typ['train']['id']))
-    #     print(labels['train'])
-    #     print(typ['train'])
-    #     print(f'val comparison labels vs {i}: ')
-    #     print(labels['val']['id'].compare(typ['val']['id']))
-    #     print(labels['val'])
-    #     print(typ['val'])
+            train_pos = get_pos_feat(train_dict, pos, tindex)
+            val_pos = get_pos_feat(train_dict, pos, vindex)
 
-    # print(embeddings[])
+    if dep:
+        if not train_dict:
+            train_dict = json.load(
+                open(f'{PROC_DATA_PATH}/{dataset}_train_data.json', 'r')
+            )
 
-    # labels = embeddings['labels'].dropna()
-    # trainDF = labels[labels['split_type'] == 'train'][['p0', 'id']].rename(
-    #     columns={'p0': 'label'}
-    # ).astype(
-    #     {'label': int}
-    # )
-    # mask = None
-    # if dataset == 'political_debates':  # political_debates
-    #     from sklearn.model_selection import train_test_split
+        nlp = spacy.load('en_core_web_lg')
+        dep_map = get_dep_map(nlp, train_dict, dep)
 
-    #     _, val_ids = train_test_split(
-    #         trainDF['id'].values,
-    #         test_size=0.2,
-    #         random_state=2
-    #     )
-    #     mask = trainDF['id'].isin(val_ids)
-    #     valDF = trainDF[mask].reset_index(drop=True)
-    #     trainDF = trainDF[~mask].reset_index(drop=True)
+        if dataset == 'covid_tweets':
+            val_dict = json.load(
+                open(f'{PROC_DATA_PATH}/{dataset}_val_data.json', 'r')
+            )
+            val_dep = get_dep_feats(nlp, dep_map, val_dict, pos)
+            train_dep = get_dep_feats(nlp, dep_map, train_dict, pos)
 
-    # else:
-    #     valDF = labels[labels['split_type'] == 'val'][['p0', 'id']].rename(
-    #         columns={'p0': 'label'}
-    #     ).astype(
-    #         {'label': int}
-    #     )
+        else:
+            tindex = tindex if tindex else set(
+                embeddings['labels']['train']['id'].values.astype(str)
+            )
+            vindex = vindex if vindex else set(
+                embeddings['labels']['val']['id'].values.astype(str)
+            )
+
+            train_dep = get_dep_feats(nlp, dep_map, train_dict, dep, tindex)
+            val_dep = get_dep_feats(nlp, dep_map, train_dict, dep, vindex)
 
     # exit()
     train_y = embeddings['labels']['train']['p0'].values
@@ -327,6 +364,10 @@ def svm_bert(dataset: str = 'covid_tweets', pos: Union[str, bool] = False):
         if pos:
             ft_train = np.concatenate((ft_train, train_pos), axis=1)
             ft_val = np.concatenate((ft_val, val_pos), axis=1)
+
+        if dep:
+            ft_train = np.concatenate((ft_train, train_dep), axis=1)
+            ft_val = np.concatenate((ft_val, val_dep), axis=1)
 
         # train_y =
         accuracy, best_pca_nk, classifier = get_best_svm_model(
@@ -447,4 +488,47 @@ def prepare(df, dataset='covid_tweets', subset=1.0, rs=22):
 
 
 # def subset(df):
-svm_bert(dataset='political_debates')  # dataset='political_debates'
+pos_type = 'pos_ns'  # equivalent to pos_twit_nostop
+dep_type = 'cleaned_ns'
+svm_bert(dataset='political_debates', pos=pos_type, dep=dep_type)
+
+# labels = embeddings['labels']
+# for i in emb_list[:-1]:
+#     typ = embeddings[i]
+
+#     print(f'train comparison labels vs {i}: ')
+#     print(labels['train']['id'].compare(typ['train']['id']))
+#     print(labels['train'])
+#     print(typ['train'])
+#     print(f'val comparison labels vs {i}: ')
+#     print(labels['val']['id'].compare(typ['val']['id']))
+#     print(labels['val'])
+#     print(typ['val'])
+
+# print(embeddings[])
+
+# labels = embeddings['labels'].dropna()
+# trainDF = labels[labels['split_type'] == 'train'][['p0', 'id']].rename(
+#     columns={'p0': 'label'}
+# ).astype(
+#     {'label': int}
+# )
+# mask = None
+# if dataset == 'political_debates':  # political_debates
+#     from sklearn.model_selection import train_test_split
+
+#     _, val_ids = train_test_split(
+#         trainDF['id'].values,
+#         test_size=0.2,
+#         random_state=2
+#     )
+#     mask = trainDF['id'].isin(val_ids)
+#     valDF = trainDF[mask].reset_index(drop=True)
+#     trainDF = trainDF[~mask].reset_index(drop=True)
+
+# else:
+#     valDF = labels[labels['split_type'] == 'val'][['p0', 'id']].rename(
+#         columns={'p0': 'label'}
+#     ).astype(
+#         {'label': int}
+#     )
