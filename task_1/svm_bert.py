@@ -68,7 +68,7 @@ def get_best_svm_model(
     best_acc = 0.0
     best_model = 0
     best_prec = 0.0
-    best_pca_nk = 0
+    best_pca = 0
     temp_xtrain = feature_vector_train
     temp_xval = feature_vector_valid
 
@@ -146,9 +146,9 @@ def get_best_svm_model(
                         best_prec = avg_precision
                         best_acc = acc
                         best_model = model
-                        best_pca_nk = pca_nk
+                        best_pca = pca_nk
 
-    return best_acc, best_pca_nk, best_model
+    return best_acc, best_pca, best_model
 
 
 def get_tweet_data(tweet_list):
@@ -240,6 +240,7 @@ def svm_bert(
     dataset: str = 'covid_tweets',
     pos: Union[str, bool] = False,
     dep: Union[str, bool] = False,
+    ensemble: bool = False,
 ):
 
     # train_y, trainDF = get_tweet_data(train_dict)
@@ -327,6 +328,9 @@ def svm_bert(
     # emb_list = ['sent_word_catavg', 'sent_word_catavg_wostop', 'sent_word_sumavg',
     #             'sent_word_sumavg_wostop', 'sent_emb_2_last', 'sent_emb_2_last_wostop',
     #             'sent_emb_last', 'sent_emb_last_wostop']
+    if ensemble:
+        pred_all, desc_all = [], []
+
     fname = f'{txt_type}_{bert_type}'
     for emb_type in emb_list:
         since = time.time()
@@ -369,36 +373,116 @@ def svm_bert(
             ft_train = np.concatenate((ft_train, train_dep), axis=1)
             ft_val = np.concatenate((ft_val, val_dep), axis=1)
 
-        # train_y =
-        accuracy, best_pca_nk, classifier = get_best_svm_model(
-            ft_train, train_y,
-            ft_val, fname,
-            emb_type, val_y, valDF,
-            dataset_name=dataset
-        )
+        if ensemble:
+            model_path_no_ext = os.path.join(
+                my_loc,
+                'models',
+                f'{fname}_{emb_type}_norm{args.normalize}'
+            )
 
-        if best_pca_nk != 1.0:
-            pca = decomposition.PCA(n_components=best_pca_nk).fit(ft_train)
+            with open(f'{model_path_no_ext}.pkl', 'rb') as mb:
+                model_params = pickle.load(mb)
+                best_pca = model_params['best_pca']
+
+            classifier = svm.SVC()
+            with open(
+                f'{model_path_no_ext}.dt',
+                'rb'
+            ) as cb:
+                classifier = pickle.load(cb)
+
+        else:
+            accuracy, best_pca, classifier = get_best_svm_model(
+                ft_train, train_y,
+                ft_val, fname,
+                emb_type, val_y, valDF,
+                dataset_name=dataset
+            )
+
+        if best_pca != 1.0:
+            pca = decomposition.PCA(n_components=best_pca).fit(ft_train)
             ft_val = pca.transform(ft_val)
 
-        print("SVM, %s, %s Accuracy: %.3f" %
-              (fname, emb_type, round(accuracy, 3)))
-        print("PCA No. Components: %.2f, Dim: %d" %
-              (best_pca_nk, ft_val.shape[1]))
-        print("C: %.3f, Gamma: %.3f, kernel: %s" %
-              (classifier.C, classifier.gamma, classifier.kernel))
+        if ensemble:
+            print(
+                f'Model {emb_type} ACC: {classifier.score(ft_val, val_y):.3f}'
+            )
 
-        predicted_distance = classifier.decision_function(ft_val)
-        results_fpath = f'{RESULTS_PATH}/{dataset}_bert_word_{fname}_{emb_type}_svm_norm{args.normalize}.tsv'
+            pred_all.append(classifier.predict(ft_val))
+            desc_all.append(classifier.decision_function(ft_val))
+
+        else:
+            print("SVM, %s, %s Accuracy: %.3f" %
+                  (fname, emb_type, round(accuracy, 3)))
+            print("PCA No. Components: %.2f, Dim: %d" %
+                  (best_pca, ft_val.shape[1]))
+            print("C: %.3f, Gamma: %.3f, kernel: %s" %
+                  (classifier.C, classifier.gamma, classifier.kernel))
+
+            predicted_distance = classifier.decision_function(ft_val)
+            results_fpath = f'{RESULTS_PATH}/{dataset}_bert_word_{fname}_{emb_type}_svm_norm{args.normalize}.tsv'
+            with open(results_fpath, "w") as results_file:
+                for i, line in valDF.iterrows():
+                    dist = predicted_distance[i]
+                    results_file.write("{}\t{}\t{}\t{}\n".format(
+                        dataset,
+                        line['id'],
+                        dist,
+                        'bert_wd'
+                    ))
+
+            if dataset == 'covid_tweets':
+                _, _, avg_precision, _, _ = evaluate(
+                    f'{data_path}/dev.tsv', results_fpath)
+            else:
+                _, _, avg_precision, _, _ = evaluate(
+                    f"{INPUT_DATA_PATHS[dataset]['folderpath']}/val_combined.tsv",
+                    results_fpath
+                )
+            # _, _, avg_precision, _, _ = evaluate(
+            #     f'{data_path}/dev.tsv', results_fpath)
+            print(
+                f"{dataset}, {fname}, {emb_type} SVM AVGP: {round(avg_precision, 4)}\n")
+            # print('best_pca', best_pca)
+            with open(
+                my_loc+'/models/'+fname+'_'+emb_type +
+                    '_norm%s.pkl' % (args.normalize),
+                'wb'
+            ) as bpcaf:
+                pickle.dump({'best_pca': best_pca}, bpcaf)
+
+            with open(
+                my_loc+'/models/'+fname + '_'+emb_type +
+                    '_norm%s.dt' % (args.normalize),
+                'wb'
+            ) as bmodelf:
+                pickle.dump(classifier, bmodelf)
+
+            all_res.append([emb_type, round(accuracy, 3), round(avg_precision, 4),
+                            best_pca, ft_train.shape[1], ft_val.shape[1]])
+
+            print("Completed in: {} minutes\n".format((time.time()-since)/60.0))
+
+    if ensemble:
+        final_pred = np.ceil(np.mean(pred_all, axis=0)).astype(np.int8)
+        final_desc = np.zeros(len(final_pred))
+        final_desc[final_pred == 1] = np.max(desc_all, axis=0)[final_pred == 1]
+        final_desc[final_pred == 0] = np.min(desc_all, axis=0)[final_pred == 0]
+
+        print("Ensemble ACC: %.3f" % (sum(val_y == final_pred)/len(val_y)))
+
+        # results_fpath = my_loc+'/results/task1_ensemble_bert_posdep_svm_dev.tsv'
+        results_fpath = os.path.join(
+            my_loc,
+            'results',
+            'task1_ensemble_bert_posdep_svm_dev.tsv'
+        )
         with open(results_fpath, "w") as results_file:
             for i, line in valDF.iterrows():
-                dist = predicted_distance[i]
-                results_file.write("{}\t{}\t{}\t{}\n".format(
-                    dataset,
-                    line['id'],
-                    dist,
-                    'bert_wd'
-                ))
+                dist = final_desc[i]
+                results_file.write(
+                    "{}\t{}\t{}\t{}\n".format(dataset, line['id'],
+                                              dist, "bert_posdep"))
 
         if dataset == 'covid_tweets':
             _, _, avg_precision, _, _ = evaluate(
@@ -408,35 +492,16 @@ def svm_bert(
                 f"{INPUT_DATA_PATHS[dataset]['folderpath']}/val_combined.tsv",
                 results_fpath
             )
-        # _, _, avg_precision, _, _ = evaluate(
-        #     f'{data_path}/dev.tsv', results_fpath)
-        print(f"{dataset}, {fname}, {emb_type} SVM AVGP: {round(avg_precision, 4)}\n")
-        # print('best_pca', best_pca_nk)
-        with open(
-            my_loc+'/models/'+fname+'_'+emb_type +
-                '_norm%s.pkl' % (args.normalize),
-            'wb'
-        ) as bpcaf:
-            pickle.dump({'best_pca': best_pca_nk}, bpcaf)
 
-        with open(
-            my_loc+'/models/'+fname + '_'+emb_type +
-                '_norm%s.dt' % (args.normalize),
-            'wb'
-        ) as bmodelf:
-            pickle.dump(classifier, bmodelf)
+        print("Ensemble Precision: %.4f" % (avg_precision))
 
-        all_res.append([emb_type, round(accuracy, 3), round(avg_precision, 4),
-                        best_pca_nk, ft_train.shape[1], ft_val.shape[1]])
+    else:
+        with open(my_loc+'/file_results/bert_svm_word_%s_norm%d.txt' % (fname, args.normalize), 'w') as f:
+            for res in all_res:
+                f.write("%s\t%.3f\t%.4f\t%.2f\t%d\t%d\n" %
+                        (res[0], res[1], res[2], res[3], res[4], res[5]))
 
-        print("Completed in: {} minutes\n".format((time.time()-since)/60.0))
-
-    with open(my_loc+'/file_results/bert_svm_word_%s_norm%d.txt' % (fname, args.normalize), 'w') as f:
-        for res in all_res:
-            f.write("%s\t%.3f\t%.4f\t%.2f\t%d\t%d\n" %
-                    (res[0], res[1], res[2], res[3], res[4], res[5]))
-
-        f.write('\n\n')
+            f.write('\n\n')
 
 
 def prepare(df, dataset='covid_tweets', subset=1.0, rs=22):
@@ -490,7 +555,8 @@ def prepare(df, dataset='covid_tweets', subset=1.0, rs=22):
 # def subset(df):
 pos_type = 'pos_ns'  # equivalent to pos_twit_nostop
 dep_type = 'cleaned_ns'
-svm_bert(dataset='political_debates', pos=pos_type, dep=dep_type)
+svm_bert(dataset='political_debates',
+         pos=pos_type, dep=dep_type, ensemble=True)
 
 # labels = embeddings['labels']
 # for i in emb_list[:-1]:
