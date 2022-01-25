@@ -23,6 +23,7 @@ def preprocess(dataset: str = 'covid_tweets', spacy_nlp: Language = None):
 
     stopwords_set = set(stopwords.words('english'))
 
+    # TODO: mention getting different txt procerssor for polit. debates
     if dataset == 'covid_tweets':
         text_proc = get_text_processor(word_stats='twitter')
     elif dataset == 'political_debates':

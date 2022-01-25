@@ -238,6 +238,7 @@ def get_dep_feats(nlp, dep_map, data_dict, dep, index=None):
 
 def svm_bert(
     dataset: str = 'covid_tweets',
+    subset: float = 1.0,
     pos: Union[str, bool] = False,
     dep: Union[str, bool] = False,
     ensemble: bool = False,
@@ -262,7 +263,7 @@ def svm_bert(
     txt_type, bert_type = 'raw', 'bert-large-uncased'
 
     embeddings = {
-        k: prepare(v, dataset='political_debates', subset=0.025)
+        k: prepare(v, dataset=dataset, subset=subset)
         for k, v in load_bert_embeddings(
             dataset,
             text_type=txt_type,
@@ -352,7 +353,12 @@ def svm_bert(
         ft_val = split_emb['val'].iloc[:, 2:]
 
         valDF = pd.DataFrame(val_y, columns=['label'])
-        valDF['id'] = split_emb['val']['id']
+        valDF['id'] = split_emb['val']['id'].values
+
+        print('\n\nvalDF\n\n')
+        print(valDF)
+        print(valDF[~valDF['label'].isna()].shape)
+        print(split_emb['val']['id'])
         valDF = valDF.astype(int)
 
         if args.normalize:
@@ -373,18 +379,19 @@ def svm_bert(
             ft_train = np.concatenate((ft_train, train_dep), axis=1)
             ft_val = np.concatenate((ft_val, val_dep), axis=1)
 
+        model_path_no_ext = os.path.join(
+            my_loc,
+            'models',
+            dataset,
+            f'{fname}_{emb_type}_norm{args.normalize}'
+        )
         if ensemble:
-            model_path_no_ext = os.path.join(
-                my_loc,
-                'models',
-                f'{fname}_{emb_type}_norm{args.normalize}'
-            )
-
             with open(f'{model_path_no_ext}.pkl', 'rb') as mb:
                 model_params = pickle.load(mb)
                 best_pca = model_params['best_pca']
 
             classifier = svm.SVC()
+            # continue investigation here
             with open(
                 f'{model_path_no_ext}.dt',
                 'rb'
@@ -404,6 +411,8 @@ def svm_bert(
             ft_val = pca.transform(ft_val)
 
         if ensemble:
+            print('ft_val: ', ft_val)
+            print('val_y:', val_y)
             print(
                 f'Model {emb_type} ACC: {classifier.score(ft_val, val_y):.3f}'
             )
@@ -445,15 +454,13 @@ def svm_bert(
                 f"{dataset}, {fname}, {emb_type} SVM AVGP: {round(avg_precision, 4)}\n")
             # print('best_pca', best_pca)
             with open(
-                my_loc+'/models/'+fname+'_'+emb_type +
-                    '_norm%s.pkl' % (args.normalize),
+                f'{model_path_no_ext}.pkl',
                 'wb'
             ) as bpcaf:
                 pickle.dump({'best_pca': best_pca}, bpcaf)
 
             with open(
-                my_loc+'/models/'+fname + '_'+emb_type +
-                    '_norm%s.dt' % (args.normalize),
+                f'{model_path_no_ext}.dt',
                 'wb'
             ) as bmodelf:
                 pickle.dump(classifier, bmodelf)
@@ -511,6 +518,10 @@ def prepare(df, dataset='covid_tweets', subset=1.0, rs=22):
 
     if dataset == 'covid_tweets':
         val = df[df['split_type'] == 'val']
+        print('\n\nin prepare val: \n\n')
+        print(val)
+        if val.shape[1] < 4:
+            print(val[~val['p0'].isna()].shape)
     else:
         from sklearn.model_selection import train_test_split
         tmask, vmask = train_test_split(
@@ -520,8 +531,8 @@ def prepare(df, dataset='covid_tweets', subset=1.0, rs=22):
         val['split_type'] = 'val'
 
         train = train[train['id'].isin(tmask)].reset_index(drop=True)
+        path = f"{INPUT_DATA_PATHS[dataset]['folderpath']}/val_combined.tsv"
 
-    path = f"{INPUT_DATA_PATHS[dataset]['folderpath']}/val_combined.tsv"
     if dataset == 'political_debates' \
             and df.columns.size < 4 \
             and not os.path.exists(path):
@@ -555,9 +566,10 @@ def prepare(df, dataset='covid_tweets', subset=1.0, rs=22):
 # def subset(df):
 pos_type = 'pos_ns'  # equivalent to pos_twit_nostop
 dep_type = 'cleaned_ns'
-svm_bert(dataset='political_debates',
-         pos=pos_type, dep=dep_type, ensemble=True)
-
+# svm_bert(dataset='covid_tweets', subset=1.0,  # dataset='political_debates', subset=0.025,  #
+#          pos=pos_type, dep=dep_type, ensemble=False)
+svm_bert(dataset='political_debates', subset=0.025,  #
+         pos=pos_type, dep=dep_type, ensemble=False)
 # labels = embeddings['labels']
 # for i in emb_list[:-1]:
 #     typ = embeddings[i]

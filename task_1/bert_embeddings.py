@@ -107,6 +107,10 @@ def extract_bert_embeddings(dataset: str = 'covid_tweets'):
 
                     if phase != 'test':
                         embed_dataframes['labels'].append(data[id]['label'])
+                    else:
+                        # append -1 to keep labels as big as other categories
+                        # so that there is no misalignment
+                        embed_dataframes['labels'].append(-1)
 
                     phase_column.append(phase)
 
